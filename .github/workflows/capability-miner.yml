@@ -1,9 +1,9 @@
 name: Capability Miner
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
   workflow_dispatch: {}
+  # schedule trigger disabled while debugging the 429 quota issue.
+  # - cron: "0 */6 * * *"
 
 concurrency:
   group: ideation-pipeline-write
