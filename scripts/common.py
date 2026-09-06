@@ -4,11 +4,16 @@ judge.py). No state lives here beyond the Gemini API key read at import time
 -- everything else is passed explicitly so each script stays a plain,
 inspectable function call, not a hidden shared object.
 
-Model choice and rate limits are pinned to this project's actual free-tier
-quota (see My-free_Gemini_Api.txt): gemini-3.1-flash-lite (15 RPM) for
-generation, gemini-embedding-001 (100 RPM) for embeddings. If you upgrade
-tier or change models, update RATE_LIMIT_SECONDS_* to match the new RPM
-(60 / RPM, with a small buffer).
+Two generate models are used, split by whether a call needs grounded
+search:
+  - GENERATE_MODEL (gemini-3.5-flash-lite, 15 RPM / 500 RPD): the only
+    one used for calls with use_search=True. Grounding is not supported
+    on Gemma, so use_search forces this model regardless of what's asked.
+  - GEMMA_MODEL (gemma-4-31b-it, 30 RPM / 14,400 RPD per current quota
+    sheet): used for everything that doesn't need search, to keep those
+    calls off the much scarcer 500 RPD budget.
+Embeddings use gemini-embedding-001 (100 RPM / 1,000 RPD), untouched by
+this split since it was never the bottleneck.
 """
 import os
 import re
@@ -21,33 +26,41 @@ import requests
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
-GENERATE_MODEL = "gemini-3.1-flash-lite"
+GENERATE_MODEL = "gemini-3.5-flash-lite"
+GEMMA_MODEL = "gemma-4-31b-it"
 EMBED_MODEL = "gemini-embedding-001"
 
-# 15 RPM on the generate model -> one call every 4s minimum. Buffered to 4.5s.
-RATE_LIMIT_SECONDS_GENERATE = 4.5
-# 100 RPM on the embedding model -> one call every 0.6s minimum. Buffered to 1s.
-RATE_LIMIT_SECONDS_EMBED = 1.0
+# Per-model minimum seconds between calls, derived from 60/RPM with a
+# small buffer. Update these if the quota sheet changes.
+RATE_LIMIT_SECONDS = {
+    GENERATE_MODEL: 4.5,   # 15 RPM
+    GEMMA_MODEL: 2.2,      # 30 RPM
+}
+RATE_LIMIT_SECONDS_EMBED = 1.0  # 100 RPM
 
-_last_generate_call = 0.0
+_last_call_by_model = {}
 _last_embed_call = 0.0
 
 
-def _throttle(kind):
-    global _last_generate_call, _last_embed_call
+def _throttle_model(model):
     now = time.monotonic()
-    if kind == "generate":
-        wait = RATE_LIMIT_SECONDS_GENERATE - (now - _last_generate_call)
-        if wait > 0:
-            print(f"    [throttle] waiting {wait:.1f}s to respect rate limit...", flush=True)
-            time.sleep(wait)
-        _last_generate_call = time.monotonic()
-    else:
-        wait = RATE_LIMIT_SECONDS_EMBED - (now - _last_embed_call)
-        if wait > 0:
-            print(f"    [throttle] waiting {wait:.1f}s to respect rate limit...", flush=True)
-            time.sleep(wait)
-        _last_embed_call = time.monotonic()
+    last = _last_call_by_model.get(model, 0.0)
+    limit = RATE_LIMIT_SECONDS.get(model, 4.5)  # safe default if an unlisted model is passed
+    wait = limit - (now - last)
+    if wait > 0:
+        print(f"    [throttle:{model}] waiting {wait:.1f}s to respect rate limit...", flush=True)
+        time.sleep(wait)
+    _last_call_by_model[model] = time.monotonic()
+
+
+def _throttle_embed():
+    global _last_embed_call
+    now = time.monotonic()
+    wait = RATE_LIMIT_SECONDS_EMBED - (now - _last_embed_call)
+    if wait > 0:
+        print(f"    [throttle:embed] waiting {wait:.1f}s to respect rate limit...", flush=True)
+        time.sleep(wait)
+    _last_embed_call = time.monotonic()
 
 
 def new_id(prefix):
@@ -97,7 +110,7 @@ def extract_json(text):
 
 def gemini_embed(text, task_type="RETRIEVAL_DOCUMENT"):
     print(f"    [embed] text ({len(text)} chars): {text[:150]!r}...", flush=True)
-    _throttle("embed")
+    _throttle_embed()
     url = f"{GEMINI_BASE}/models/{EMBED_MODEL}:embedContent?key={GEMINI_API_KEY}"
     payload = {
         "model": f"models/{EMBED_MODEL}",
@@ -115,29 +128,41 @@ def gemini_embed(text, task_type="RETRIEVAL_DOCUMENT"):
     return values
 
 
-def gemini_generate(prompt, system=None, use_search=False, retries=3):
+def gemini_generate(prompt, system=None, use_search=False, model=None, retries=3):
     """Returns raw text. Callers that expect JSON should pass it through
     extract_json() themselves -- kept separate so a caller can inspect the
     raw text on parse failure instead of losing it inside this function.
 
+    model: defaults to GENERATE_MODEL. Pass GEMMA_MODEL explicitly for
+    calls that don't need search, to keep them off the scarcer RPD
+    budget. If use_search=True, GENERATE_MODEL is forced regardless of
+    what's passed here -- grounding isn't supported on Gemma.
+
     No temperature/top_p/top_k override: Gemini 3.x's own docs recommend
     leaving these at default, since the model's reasoning is tuned for
     them -- setting a custom value here would work against the model,
-    not with it.
+    not with it. (Gemma has no such documented guidance either way, so
+    the same no-override approach is applied uniformly.)
     """
-    url = f"{GEMINI_BASE}/models/{GENERATE_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    resolved_model = model or GENERATE_MODEL
+    if use_search and resolved_model != GENERATE_MODEL:
+        print(f"    [generate] search requested with model={resolved_model} -- "
+              f"forcing {GENERATE_MODEL} since grounding needs a real Gemini model.", flush=True)
+        resolved_model = GENERATE_MODEL
+
+    url = f"{GEMINI_BASE}/models/{resolved_model}:generateContent?key={GEMINI_API_KEY}"
     payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
     if system:
         payload["systemInstruction"] = {"parts": [{"text": system}]}
     if use_search:
         payload["tools"] = [{"googleSearch": {}}]
 
-    print(f"    [generate] model={GENERATE_MODEL} search={use_search} prompt ({len(prompt)} chars):", flush=True)
+    print(f"    [generate] model={resolved_model} search={use_search} prompt ({len(prompt)} chars):", flush=True)
     print(f"    [generate] >>> {prompt[:300]!r}...", flush=True)
 
     last_err = None
     for attempt in range(retries):
-        _throttle("generate")
+        _throttle_model(resolved_model)
         resp = None
         try:
             print(f"    [generate] POST attempt {attempt + 1}/{retries} -> {url.split('?')[0]}", flush=True)
