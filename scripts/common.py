@@ -147,8 +147,9 @@ def gemini_generate(prompt, system=None, use_search=False, retries=3):
             print(f"    [generate] status={resp.status_code} elapsed={elapsed:.1f}s", flush=True)
 
             if resp.status_code == 429:
+                print(f"    [generate] 429 body: {resp.text[:800]!r}", flush=True)
                 backoff = 30 * (attempt + 1)
-                print(f"    [generate] 429 rate limited, backing off {backoff}s...", flush=True)
+                print(f"    [generate] backing off {backoff}s...", flush=True)
                 time.sleep(backoff)
                 resp.raise_for_status()
             resp.raise_for_status()
