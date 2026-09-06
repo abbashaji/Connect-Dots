@@ -1,43 +1,81 @@
-name: Capability Miner
+"""
+Capability Miner. Mirror image of gap_miner.py, and just as deliberately
+isolated: this script must never read gaps.jsonl. It does not know a gap
+corpus exists.
+"""
+from common import load_jsonl, append_jsonl, gemini_generate, gemini_embed, extract_json, new_id, now_iso
 
-on:
-  workflow_dispatch: {}
-  # schedule trigger disabled while debugging the 429 quota issue.
-  # - cron: "0 */6 * * *"
+DATA_PATH = "data/capabilities.jsonl"
 
-concurrency:
-  group: ideation-pipeline-write
-  cancel-in-progress: false
+SYSTEM = """You are the CAPABILITY MINER for an independent research
+pipeline. Your only job is to find ONE mature, general-purpose
+platform, engine, or library and document its generic capability list.
+Prefer boringly general-purpose, well-established infrastructure over
+anything novel -- you want dormant, reusable capability, not cutting-
+edge tech. Pick independent of any particular problem; you have no
+knowledge of any gap corpus and must not speculate about one.
+"""
 
-jobs:
-  mine:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+def build_prompt(existing_capabilities):
+    avoid = "\n".join(f"- {c}" for c in existing_capabilities[-30:]) or "(none yet)"
+    return f"""Search for ONE mature, general-purpose platform/engine/
+library not already covered by these existing entries (avoid
+near-duplicates):
+{avoid}
 
-      - run: pip install -r requirements.txt
+Respond with ONLY a JSON object (no markdown fences, no commentary),
+matching exactly this shape:
+{{
+  "source": "url or citation",
+  "operates_on": "abstract data shape it was built for",
+  "core_operations": {{
+    "selection": "modes it supports -- region-bound, freeform, single-pick, etc.",
+    "transformation": "what can be done to a selected subset",
+    "deletion_reduction": "yes/no, and how",
+    "io": "what it can ingest/export, and in what generality",
+    "delivery_environment": "where/how it runs"
+  }},
+  "cheap_to_extend_reason": "the hard 80% this capability already solved",
+  "known_extensions": ["other domains it has already been repurposed for, if any"],
+  "domain_tag": "the real product/org this is drawn from, private audit use only"
+}}"""
 
-      - name: Run capability miner
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PYTHONUNBUFFERED: "1"
-        run: python scripts/capability_miner.py
 
-      - name: Commit and push
-        run: |
-          git config user.name "capability-miner-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add data/capabilities.jsonl
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git commit -m "capability-miner: add new capability entry"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+def public_text(cap):
+    co = cap["core_operations"]
+    return (
+        f"Operates on: {cap['operates_on']}\n"
+        f"Selection: {co.get('selection', '')}\n"
+        f"Transformation: {co.get('transformation', '')}\n"
+        f"Deletion/reduction: {co.get('deletion_reduction', '')}\n"
+        f"I/O: {co.get('io', '')}\n"
+        f"Delivery environment: {co.get('delivery_environment', '')}\n"
+        f"Why cheap to extend: {cap.get('cheap_to_extend_reason', '')}"
+    )
+
+
+def main():
+    print("Loading existing capabilities...", flush=True)
+    existing = load_jsonl(DATA_PATH)
+    existing_summaries = [c.get("operates_on", "") for c in existing]
+    print(f"Loaded {len(existing)} existing capability(ies).", flush=True)
+
+    print("Calling Gemini (grounded search) for a new capability candidate...", flush=True)
+    raw = gemini_generate(build_prompt(existing_summaries), system=SYSTEM, use_search=True)
+    print("Got a response, parsing JSON...", flush=True)
+    data = extract_json(raw)
+
+    cap = {"id": new_id("cap"), "created_at": now_iso(), **data}
+    print(f"Parsed capability {cap['id']}: {cap.get('operates_on', '')[:80]}", flush=True)
+
+    print("Embedding capability for similarity search...", flush=True)
+    cap["embedding"] = gemini_embed(public_text(cap))
+
+    print(f"Writing {cap['id']} to {DATA_PATH}...", flush=True)
+    append_jsonl(DATA_PATH, cap)
+    print(f"Done. Wrote {cap['id']}: {cap['operates_on'][:80]}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
