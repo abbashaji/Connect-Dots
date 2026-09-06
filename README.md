@@ -5,6 +5,31 @@ database, no MCP layer, no manual context-switching — this replaces the
 earlier fresh-chat/file-relay design entirely, since this repo *is* a
 persistent execution substrate.
 
+## Models and rate limits (pinned to your free-tier quota)
+
+- Generation: `gemini-3.1-flash-lite` — 15 RPM on your tier, the highest
+  available among the text-out models on your quota sheet.
+- Embeddings: `gemini-embedding-001` — 100 RPM.
+- `common.py` throttles every call to stay under these ceilings (4.5s
+  between generate calls, 1s between embed calls), and treats HTTP 429
+  as a signal to back off hard (30s+) rather than retry immediately.
+- Gemini 3.x's own documentation recommends leaving `temperature`,
+  `top_p`, and `top_k` at their defaults — its reasoning is tuned for
+  them. `gemini_generate()` does not set any of these; don't add one
+  back in without checking current docs first.
+- **If you change tier or model, update `RATE_LIMIT_SECONDS_GENERATE`
+  and `RATE_LIMIT_SECONDS_EMBED` in `common.py` to match the new RPM**
+  (`60 / RPM`, with a small buffer) — nothing else adapts automatically.
+
+**What this means for run time:** an audited pair (one that clears the
+threshold, doesn't already exist, and goes all the way through
+elaboration + perturbation + adversarial audit) makes roughly 6-7
+generate calls plus 2 embed calls. At 4.5s spacing that's ~30 seconds
+per audited pair, before Gemini's own response latency. A Judge run
+processing several candidates will take minutes, not seconds — this is
+expected and is the price of staying inside a 15 RPM free tier, not a
+bug.
+
 ## Layout
 
 ```
@@ -75,13 +100,21 @@ than getting cancelled.
      check (does the answer move when a premise is altered), and an
      adversarial cross-exam with zero investment in the idea
 
-## Tunable knobs (all in `scripts/judge.py`)
+## Tunable knobs
 
+In `scripts/judge.py`:
 - `TOP_K` — how many capability candidates get shortlisted per gap.
   Higher = more thorough, more API calls, slower.
 - `THRESHOLD` — the blind-verdict cutoff for proceeding to elaboration.
-- Cron cadence — edit the `cron:` lines in the three workflow files.
-  `0 */6 * * *` = every 6 hours; adjust to your API budget.
+
+In `scripts/common.py`:
+- `GENERATE_MODEL` / `EMBED_MODEL` — change only alongside the rate
+  limits below.
+- `RATE_LIMIT_SECONDS_GENERATE` / `RATE_LIMIT_SECONDS_EMBED` — must
+  match whatever RPM your actual quota allows for the models chosen.
+
+Cron cadence — edit the `cron:` lines in the three workflow files.
+`0 */6 * * *` = every 6 hours; adjust to your API budget.
 
 ## Known limitations, stated plainly
 
