@@ -56,17 +56,25 @@ def public_text(cap):
 
 
 def main():
+    print("Loading existing capabilities...", flush=True)
     existing = load_jsonl(DATA_PATH)
     existing_summaries = [c.get("operates_on", "") for c in existing]
+    print(f"Loaded {len(existing)} existing capability(ies).", flush=True)
 
+    print("Calling Gemini (grounded search) for a new capability candidate...", flush=True)
     raw = gemini_generate(build_prompt(existing_summaries), system=SYSTEM, use_search=True)
+    print("Got a response, parsing JSON...", flush=True)
     data = extract_json(raw)
 
     cap = {"id": new_id("cap"), "created_at": now_iso(), **data}
+    print(f"Parsed capability {cap['id']}: {cap.get('operates_on', '')[:80]}", flush=True)
+
+    print("Embedding capability for similarity search...", flush=True)
     cap["embedding"] = gemini_embed(public_text(cap))
 
+    print(f"Writing {cap['id']} to {DATA_PATH}...", flush=True)
     append_jsonl(DATA_PATH, cap)
-    print(f"Wrote {cap['id']}: {cap['operates_on'][:80]}")
+    print(f"Done. Wrote {cap['id']}: {cap['operates_on'][:80]}", flush=True)
 
 
 if __name__ == "__main__":

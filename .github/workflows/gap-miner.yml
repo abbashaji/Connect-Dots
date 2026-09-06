@@ -30,6 +30,7 @@ jobs:
       - name: Run gap miner
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: python scripts/gap_miner.py
 
       - name: Commit and push

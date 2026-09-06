@@ -59,17 +59,25 @@ def public_text(gap):
 
 
 def main():
+    print("Loading existing gaps...", flush=True)
     existing = load_jsonl(DATA_PATH)
     existing_complaints = [g.get("complaint", "") for g in existing]
+    print(f"Loaded {len(existing)} existing gap(s).", flush=True)
 
+    print("Calling Gemini (grounded search) for a new gap candidate...", flush=True)
     raw = gemini_generate(build_prompt(existing_complaints), system=SYSTEM, use_search=True)
+    print("Got a response, parsing JSON...", flush=True)
     data = extract_json(raw)
 
     gap = {"id": new_id("gap"), "created_at": now_iso(), **data}
+    print(f"Parsed gap {gap['id']}: {gap.get('complaint', '')[:80]}", flush=True)
+
+    print("Embedding gap for similarity search...", flush=True)
     gap["embedding"] = gemini_embed(public_text(gap))
 
+    print(f"Writing {gap['id']} to {DATA_PATH}...", flush=True)
     append_jsonl(DATA_PATH, gap)
-    print(f"Wrote {gap['id']}: {gap['complaint'][:80]}")
+    print(f"Done. Wrote {gap['id']}: {gap['complaint'][:80]}", flush=True)
 
 
 if __name__ == "__main__":

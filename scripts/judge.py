@@ -167,19 +167,28 @@ Respond with ONLY a JSON object: {{"objections": [{{"objection": "...",
 
 
 def main():
+    print("Loading gaps, capabilities, and existing verdicts...", flush=True)
     gaps = load_jsonl(GAPS_PATH)
     caps = load_jsonl(CAPS_PATH)
     verdicts = load_jsonl(VERDICTS_PATH)
     seen_pairs = {(v["gap_id"], v["capability_id"]) for v in verdicts}
+    print(f"Loaded {len(gaps)} gap(s), {len(caps)} capability(ies), {len(verdicts)} past verdict(s).", flush=True)
 
+    print("Building shortlist by embedding similarity...", flush=True)
     candidates = find_candidates(gaps, caps, seen_pairs)
     if not candidates:
-        print("No new candidate pairs.")
+        print("No new candidate pairs. Done.", flush=True)
         return
+    print(f"Shortlisted {len(candidates)} candidate pair(s) to judge.", flush=True)
 
-    for gap, cap, sim in candidates:
+    for i, (gap, cap, sim) in enumerate(candidates, 1):
+        print(f"\n--- Candidate {i}/{len(candidates)}: {gap['id']} x {cap['id']} (similarity={sim:.3f}) ---", flush=True)
+
+        print("  [1/6] Blind verdict scoring...", flush=True)
         verdict_result = blind_verdict(gap, cap)
         score = verdict_result.get("fit_score", 0)
+        print(f"  [1/6] Fit score: {score} -- {verdict_result.get('justification', '')}", flush=True)
+
         record = {
             "id": new_id("pv"),
             "gap_id": gap["id"],
@@ -193,29 +202,41 @@ def main():
         if score < THRESHOLD:
             record["status"] = "no_match"
             append_jsonl(VERDICTS_PATH, record)
-            print(f"{record['id']}: score={score} -> no_match")
+            print(f"  Below threshold ({THRESHOLD}) -- writing no_match, moving on.", flush=True)
             continue
 
+        print("  [2/6] Retrieving precedent from past verdicts...", flush=True)
         precedents = find_precedents(gap, cap, verdicts)
+        print(f"  [2/6] Found {len(precedents)} relevant precedent(s).", flush=True)
+
+        print("  [3/6] Running four-stage elaboration...", flush=True)
         elaboration = elaborate(gap, cap, precedents)
         record["elaboration"] = elaboration
-        record["entailment_check"] = entailment_check(gap, cap, elaboration)
+        print(f"  [3/6] Marginal build proposed: {elaboration.get('stage_4', '')[:100]}", flush=True)
 
+        print("  [4/6] Running entailment check...", flush=True)
+        record["entailment_check"] = entailment_check(gap, cap, elaboration)
+        print(f"  [4/6] Leakage flagged: {record['entailment_check'].get('leakage_flagged')}", flush=True)
+
+        print("  [5/6] Running existence check (grounded search)...", flush=True)
         existence = existence_check(elaboration)
         record["existence_check"] = existence
 
         if existence.get("already_exists"):
             record["status"] = "existing_product_found"
             append_jsonl(VERDICTS_PATH, record)
-            print(f"{record['id']}: score={score} -> existing_product_found")
+            print("  [5/6] Already exists -- stopping here, writing existing_product_found.", flush=True)
             continue
+        print("  [5/6] No existing product found, proceeding to audit.", flush=True)
 
+        print("  [6/6] Running perturbation check and adversarial cross-exam...", flush=True)
         record["perturbation_check"] = perturbation_check(gap, cap, precedents)
 
         audit = adversarial_audit(elaboration)
         record["adversarial_audit"] = audit
         record["audit_verdict"] = audit.get("verdict")
         record["status"] = "audited"
+        print(f"  [6/6] Audit verdict: {record['audit_verdict']}", flush=True)
 
         try:
             record["pair_embedding"] = gemini_embed(
@@ -225,7 +246,9 @@ def main():
             pass
 
         append_jsonl(VERDICTS_PATH, record)
-        print(f"{record['id']}: score={score} -> audited, verdict={record['audit_verdict']}")
+        print(f"  Done. {record['id']}: score={score} -> audited, verdict={record['audit_verdict']}", flush=True)
+
+    print("\nAll candidates processed.", flush=True)
 
 
 if __name__ == "__main__":

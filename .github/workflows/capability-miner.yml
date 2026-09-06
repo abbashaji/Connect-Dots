@@ -26,6 +26,7 @@ jobs:
       - name: Run capability miner
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: python scripts/capability_miner.py
 
       - name: Commit and push

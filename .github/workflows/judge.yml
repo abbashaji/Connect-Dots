@@ -34,6 +34,7 @@ jobs:
       - name: Run judge
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: python scripts/judge.py
 
       - name: Commit and push
