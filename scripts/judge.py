@@ -71,7 +71,7 @@ this way will NOT be a strong structural fit -- a well-calibrated judge
 should give a low score to a clear majority of pairs. Respond with ONLY
 a JSON object: {{"fit_score": <0-100 integer>, "justification": "<max
 20 words>"}}. No markdown fences."""
-    return extract_json(gemini_generate(prompt, temperature=0.3))
+    return extract_json(gemini_generate(prompt))
 
 
 def find_precedents(gap, cap, verdicts, k=3):
@@ -116,7 +116,7 @@ something stated in Stage 1 or Stage 2 above.
 STAGE 4 -- State what is NOT already covered -- the actual marginal
 thing that would need to be built.
 Respond with ONLY the JSON object, no markdown fences."""
-    return extract_json(gemini_generate(prompt, temperature=0.5))
+    return extract_json(gemini_generate(prompt))
 
 
 def entailment_check(gap, cap, elaboration):
@@ -130,7 +130,7 @@ Does everything in Stage 3 and Stage 4 trace back to the operations
 listed above, or does it introduce something from neither? Respond
 with ONLY a JSON object: {{"leakage_flagged": true or false, "notes":
 "<one sentence>"}}"""
-    return extract_json(gemini_generate(prompt, temperature=0.0))
+    return extract_json(gemini_generate(prompt))
 
 
 def existence_check(elaboration):
@@ -163,7 +163,7 @@ IDEA: {elaboration.get('stage_4')}
 Respond with ONLY a JSON object: {{"objections": [{{"objection": "...",
 "answer": "..."}}, ...], "verdict": "survives" | "needs_revision" |
 "fails"}}"""
-    return extract_json(gemini_generate(prompt, temperature=0.4))
+    return extract_json(gemini_generate(prompt))
 
 
 def main():
