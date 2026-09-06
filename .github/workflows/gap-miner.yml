@@ -1,9 +1,9 @@
 name: Gap Miner
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
   workflow_dispatch: {}
+  # schedule trigger disabled while debugging the 429 quota issue.
+  # - cron: "0 */6 * * *"
 
 # Shared across all three workflows on purpose: only one of Gap Miner,
 # Capability Miner, and Judge can run at a time, repo-wide. This is what
