@@ -39,11 +39,13 @@ def _throttle(kind):
     if kind == "generate":
         wait = RATE_LIMIT_SECONDS_GENERATE - (now - _last_generate_call)
         if wait > 0:
+            print(f"    [throttle] waiting {wait:.1f}s to respect rate limit...", flush=True)
             time.sleep(wait)
         _last_generate_call = time.monotonic()
     else:
         wait = RATE_LIMIT_SECONDS_EMBED - (now - _last_embed_call)
         if wait > 0:
+            print(f"    [throttle] waiting {wait:.1f}s to respect rate limit...", flush=True)
             time.sleep(wait)
         _last_embed_call = time.monotonic()
 
@@ -94,6 +96,7 @@ def extract_json(text):
 
 
 def gemini_embed(text, task_type="RETRIEVAL_DOCUMENT"):
+    print(f"    [embed] text ({len(text)} chars): {text[:150]!r}...", flush=True)
     _throttle("embed")
     url = f"{GEMINI_BASE}/models/{EMBED_MODEL}:embedContent?key={GEMINI_API_KEY}"
     payload = {
@@ -101,9 +104,15 @@ def gemini_embed(text, task_type="RETRIEVAL_DOCUMENT"):
         "content": {"parts": [{"text": text}]},
         "taskType": task_type,
     }
+    print(f"    [embed] POST {url.split('?')[0]}", flush=True)
+    t0 = time.monotonic()
     resp = requests.post(url, json=payload, timeout=60)
+    elapsed = time.monotonic() - t0
+    print(f"    [embed] status={resp.status_code} elapsed={elapsed:.1f}s", flush=True)
     resp.raise_for_status()
-    return resp.json()["embedding"]["values"]
+    values = resp.json()["embedding"]["values"]
+    print(f"    [embed] got vector of length {len(values)}", flush=True)
+    return values
 
 
 def gemini_generate(prompt, system=None, use_search=False, retries=3):
@@ -123,21 +132,42 @@ def gemini_generate(prompt, system=None, use_search=False, retries=3):
     if use_search:
         payload["tools"] = [{"googleSearch": {}}]
 
+    print(f"    [generate] model={GENERATE_MODEL} search={use_search} prompt ({len(prompt)} chars):", flush=True)
+    print(f"    [generate] >>> {prompt[:300]!r}...", flush=True)
+
     last_err = None
     for attempt in range(retries):
         _throttle("generate")
+        resp = None
         try:
+            print(f"    [generate] POST attempt {attempt + 1}/{retries} -> {url.split('?')[0]}", flush=True)
+            t0 = time.monotonic()
             resp = requests.post(url, json=payload, timeout=120)
+            elapsed = time.monotonic() - t0
+            print(f"    [generate] status={resp.status_code} elapsed={elapsed:.1f}s", flush=True)
+
             if resp.status_code == 429:
-                # Quota hit despite throttling (e.g. another workflow run
-                # used up the window) -- back off hard, not just the
-                # standard retry delay.
-                time.sleep(30 * (attempt + 1))
+                backoff = 30 * (attempt + 1)
+                print(f"    [generate] 429 rate limited, backing off {backoff}s...", flush=True)
+                time.sleep(backoff)
                 resp.raise_for_status()
             resp.raise_for_status()
+
             data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            candidate = data["candidates"][0]
+            finish_reason = candidate.get("finishReason", "?")
+            grounding = candidate.get("groundingMetadata")
+            print(f"    [generate] finishReason={finish_reason} grounded={'yes' if grounding else 'no'}", flush=True)
+            if grounding and grounding.get("webSearchQueries"):
+                print(f"    [generate] search queries used: {grounding['webSearchQueries']}", flush=True)
+
+            text = candidate["content"]["parts"][0]["text"]
+            print(f"    [generate] <<< raw response ({len(text)} chars): {text[:300]!r}...", flush=True)
+            return text
         except Exception as e:  # noqa: BLE001 - deliberately broad, we retry regardless of cause
             last_err = e
+            print(f"    [generate] attempt {attempt + 1} failed: {e!r}", flush=True)
+            if resp is not None and attempt == retries - 1:
+                print(f"    [generate] final raw body: {resp.text[:500]!r}", flush=True)
             time.sleep(2 * (attempt + 1))
     raise RuntimeError(f"gemini_generate failed after {retries} attempts: {last_err}")
