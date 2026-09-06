@@ -5,30 +5,32 @@ database, no MCP layer, no manual context-switching — this replaces the
 earlier fresh-chat/file-relay design entirely, since this repo *is* a
 persistent execution substrate.
 
-## Models and rate limits (pinned to your free-tier quota)
+## Models and rate limits (per your quota sheet)
 
-- Generation: `gemini-3.1-flash-lite` — 15 RPM on your tier, the highest
-  available among the text-out models on your quota sheet.
-- Embeddings: `gemini-embedding-001` — 100 RPM.
-- `common.py` throttles every call to stay under these ceilings (4.5s
-  between generate calls, 1s between embed calls), and treats HTTP 429
-  as a signal to back off hard (30s+) rather than retry immediately.
-- Gemini 3.x's own documentation recommends leaving `temperature`,
-  `top_p`, and `top_k` at their defaults — its reasoning is tuned for
-  them. `gemini_generate()` does not set any of these; don't add one
-  back in without checking current docs first.
-- **If you change tier or model, update `RATE_LIMIT_SECONDS_GENERATE`
-  and `RATE_LIMIT_SECONDS_EMBED` in `common.py` to match the new RPM**
-  (`60 / RPM`, with a small buffer) — nothing else adapts automatically.
+Two generate models, split by whether a call needs grounded search:
 
-**What this means for run time:** an audited pair (one that clears the
-threshold, doesn't already exist, and goes all the way through
-elaboration + perturbation + adversarial audit) makes roughly 6-7
-generate calls plus 2 embed calls. At 4.5s spacing that's ~30 seconds
-per audited pair, before Gemini's own response latency. A Judge run
-processing several candidates will take minutes, not seconds — this is
-expected and is the price of staying inside a 15 RPM free tier, not a
-bug.
+- `gemini-3.5-flash-lite` (15 RPM / **500 RPD**) — the only model used
+  for anything with `use_search=True`: both miners, and Judge's
+  `existence_check`. Grounding isn't supported on Gemma, so
+  `gemini_generate()` forces this model whenever `use_search=True`,
+  even if a different model was requested.
+- `gemma-4-31b-it` (30 RPM / **14,400 RPD**, per your quota sheet) —
+  used for every non-search call in Judge: `blind_verdict`,
+  `elaborate`, `entailment_check`, `perturbation_check`,
+  `adversarial_audit`. This is the majority of calls per audited pair,
+  moved off the scarce 500 RPD budget onto the much larger one.
+- `gemini-embedding-001` (100 RPM / 1,000 RPD) — unchanged, was never
+  the bottleneck.
+
+`common.py` throttles each model independently (`RATE_LIMIT_SECONDS`
+dict, keyed by model name) rather than one shared generate/embed split
+— since the two generate models now have different RPM ceilings, a
+single shared throttle would either be too slow for Gemma or too fast
+for Gemini.
+
+**If your quota numbers change, update three places:** `RATE_LIMIT_SECONDS`
+in `common.py` (per-model pacing), and confirm `GENERATE_MODEL` /
+`GEMMA_MODEL` are still the right pick given the new numbers.
 
 ## Layout
 
@@ -108,10 +110,10 @@ In `scripts/judge.py`:
 - `THRESHOLD` — the blind-verdict cutoff for proceeding to elaboration.
 
 In `scripts/common.py`:
-- `GENERATE_MODEL` / `EMBED_MODEL` — change only alongside the rate
-  limits below.
-- `RATE_LIMIT_SECONDS_GENERATE` / `RATE_LIMIT_SECONDS_EMBED` — must
-  match whatever RPM your actual quota allows for the models chosen.
+- `GENERATE_MODEL` / `GEMMA_MODEL` / `EMBED_MODEL` — change only
+  alongside `RATE_LIMIT_SECONDS`.
+- `RATE_LIMIT_SECONDS` — dict keyed by model name, must match whatever
+  RPM your actual quota allows for each model chosen.
 
 Cron cadence — edit the `cron:` lines in the three workflow files.
 `0 */6 * * *` = every 6 hours; adjust to your API budget.
