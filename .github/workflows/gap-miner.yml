@@ -1,0 +1,46 @@
+name: Gap Miner
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+# Shared across all three workflows on purpose: only one of Gap Miner,
+# Capability Miner, and Judge can run at a time, repo-wide. This is what
+# turns "possible git push race" into "queues instead of racing" -- the
+# thing that was asked for.
+concurrency:
+  group: ideation-pipeline-write
+  cancel-in-progress: false
+
+jobs:
+  mine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run gap miner
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/gap_miner.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "gap-miner-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/gaps.jsonl
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "gap-miner: add new gap entry"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
